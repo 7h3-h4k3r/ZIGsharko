@@ -1,140 +1,123 @@
 package main
 
 import (
-	"context"
+	// "context"
 	"encoding/json"
-	"fmt"
+	// "log"
+	// "net/http"
+	// "os"
+	// "os/signal"
+	// "time"
+
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"sync"
-	"syscall"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-playground/validator/v10"
 )
-
-type Task struct {
-	ID          int    `json:"id"`
-	Title       string `json:"title"`
-	Discription string `json:"discription,omitempty`
-	Completed   bool   `json:"completed"`
+var validate = validator.New()
+type User struct{
+	Id 	  string  `json:"id"`
+	Name  string  `json:"username" validate:"required,min=3"`
+	Email string  `json:"email" validate:"required,email"`
 }
 
-var (
-	tasks  = make(map[int]Task)
-	nextId = 1
-	mu     sync.Mutex
-)
+var users = map[string]User{}
 
-func getTask(w http.ResponseWriter, r *http.Request) {
-	mu.Lock()
-	defer mu.Unlock()
-	var t []Task
-	for _, ts := range tasks {
-		t = append(t, ts)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(t)
-}
-func delTask(w http.ResponseWriter, r *http.Request) {
-
-	idstr := r.URL.Query().Get("id")
-	id, _ := strconv.Atoi(idstr)
-
-	_, exists := tasks[id]
-	mu.Lock()
-	defer mu.Unlock()
-	if !exists {
-		http.Error(w, "Id is Not Found ", http.StatusNotFound)
-		return
-	}
-
-	delete(tasks, id)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode("ID successfully Deleted")
-
-}
-func updateTask(w http.ResponseWriter, r *http.Request) {
-	var t Task
-	idstr := r.URL.Query().Get("id")
-	id, _ := strconv.Atoi(idstr)
-
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		http.Error(w, "update field is not yet oops somethink is wrong", http.StatusNoContent)
-		return
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	_, exists := tasks[id]
-	if !exists {
-		http.Error(w, "Update process failed , Task Id not exists", http.StatusNotFound)
-		return
-	}
-	t.ID = id
-	tasks[id] = t
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tasks[id])
-
-}
-
-func createTask(w http.ResponseWriter, r *http.Request) {
-	var t Task
-
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		http.Error(w, "json data not validate ", http.StatusBadRequest)
-		return
-	}
-
-	mu.Lock()
-	t.ID = nextId
-	nextId++
-	tasks[t.ID] = t
-	mu.Unlock()
-	fmt.Println(t)
-	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Contend-Type", "application/json")
-	json.NewEncoder(w).Encode(t)
-
-}
-func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			createTask(w, r)
-		case http.MethodPut:
-			updateTask(w, r)
-		case http.MethodDelete:
-			delTask(w, r)
-		case http.MethodGet:
-			getTask(w, r)
-		}
+func jsonContentType(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		next.ServeHTTP(w, r)
 	})
-	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+}
+func welcomePage(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("hello welcome to the page"))
+}
+
+func getUsers(w http.ResponseWriter , r *http.Request){
+	userList := make([]User,0,len(users))
+	for _ , user :=  range users{
+		userList = append(userList,user)
+	}
+	writeRes(w,200,userList)
+}
+
+func writeRes(w http.ResponseWriter ,code int,data interface{}){
+	w.WriteHeader(code)
+  	json.NewEncoder(w).Encode(map[string]interface{}{
+    "data": data,
+  })
+}
+func writeJSONError(w http.ResponseWriter, code int, message, detail string) {
+  w.WriteHeader(code)
+  json.NewEncoder(w).Encode(map[string]interface{}{
+    "error": map[string]interface{}{
+      "code":    code,
+      "message": message,
+      "details": detail,
+    },
+  })
+}
+func setUser(w http.ResponseWriter , r *http.Request){
+	var u User
+
+	if err:=json.NewDecoder(r.Body).Decode(&u);err!=nil{
+		writeJSONError(w,http.StatusBadRequest,"Invalidate user data",err.Error())
+		return
+	}
+
+	if err := validate.Struct(&u);err!=nil{
+		writeJSONError(w,http.StatusBadRequest,"Data Missing",err.Error())
+		return
+	}
+
+	_ ,exists := users[u.Id]
+	if exists {
+		writeJSONError(w,http.StatusBadRequest,"user Id already in","id")
+		return
+	}
+
+	users[u.Id] = u
+	writeRes(w,200,u)
+}
+
+func main() {
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.RequestID)
+	r.Use(jsonContentType)
+
+	r.Route("/v1/users", func(r chi.Router) {
+		r.Get("/", welcomePage)
+		r.Get("/alluser",getUsers)
+		r.Post("/setUser",setUser)
+
+	})
+	srv := &http.Server{
+		Addr:    ":3434",
+		Handler: r,
 	}
 
 	go func() {
-		log.Println("Server started Listing port on :[8080]")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen : %s", err)
 		}
 	}()
+
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
+	signal.Notify(quit, os.Interrupt)
 	<-quit
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Forced to shutdown: %v", err)
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal("server shutting down forcely")
 	}
-
-	log.Println("Server exited")
+	log.Printf("server shutdown ")
 }
